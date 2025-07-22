@@ -1,0 +1,4 @@
+sample_rate: 16000
+chunk_size: 512
+pre_roll_ms: 100
+max_speech_duration_ms: 10000
