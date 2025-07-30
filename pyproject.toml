@@ -16,6 +16,8 @@ dependencies = [
     "torchaudio>=2.7.1",
     "numpy>=2.3.1",
     "omegaconf>=2.3.0",
+    "noisereduce>=3.0.3",
+    "webrtcvad>=2.0.10",
 ]
 
 [dependency-groups]
