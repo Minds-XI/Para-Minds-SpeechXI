@@ -6,7 +6,9 @@ from asr.vad.base import VADServiceBase
 from omegaconf import OmegaConf
 from typing import Union
 from asr.utils.audio import read_audio_as_stream
-from config import CONFIG_DIR
+from config.paths import CONFIG_DIR
+import noisereduce as nr
+
 class SileroVADModel:
     def __init__(self,
                  stream_model: bool = True,
@@ -71,7 +73,7 @@ class SileroVADService(VADServiceBase):
         self.triggered = False
         self.frames_since_start = 0
         self.max_speech_frames = int(getattr(self, 'max_speech_duration_ms', 10000) // self.frame_ms)  # Max 10 seconds
-
+        self.noise_sample = np.array([])
     def process_stream(self, audio: bytes):
         """Process streaming audio data"""
         if not audio:
@@ -83,7 +85,10 @@ class SileroVADService(VADServiceBase):
             return None
         
         # Convert to float32 normalized audio
-        audio_float32 = pcm_samples.astype(np.float32) / 32768.0
+        audio_float32 = pcm_samples.astype(np.float32)  / 32768.0
+        # process audio 
+        # audio_float32 = self._remove_noise(audio_float32)
+        # audio_float32 = self._preprocess_chunks(audio_float32)
         self.vad_buffer = np.concatenate((self.vad_buffer, audio_float32))
         
         results = []
@@ -207,11 +212,25 @@ class SileroVADService(VADServiceBase):
         """Set attributes from configuration dictionary"""
         for key, value in config.items():
             setattr(self, key, value)
-        
+    
+    def _preprocess_chunks(self,chunk:np.array):
+        # print(chunk)
+        # remove dc part
+        chunk = chunk - np.mean(chunk)
+        # normalize
+        # max_amp= np.max(chunk)
+        # if max_amp > 1e6:
+        #     chunk = chunk/max_amp
+        # else:
+        #     chunk = np.zeros_like(chunk)
+        return chunk
     def process_file(self, file_path):
         """Process an entire audio file"""
         return super().process_file(file_path)
 
+    def _remove_noise(self,chunk:np.array):
+        clean_chunk = nr.reduce_noise(chunk,sr=self.sample_rate,y_noise=self.noise_sample,prop_decrease=0.5)
+        return clean_chunk
 # Example usage and testing
 if __name__ == "__main__":
     # Initialize the VAD system
@@ -221,7 +240,7 @@ if __name__ == "__main__":
     # Process audio stream
     try:
         audio_chunks = read_audio_as_stream(
-            file_path="/mnt/data/projects/Para-Minds-SpeechXI/.data/call_0_walkie_talkie_effect.wav"
+            file_path="/mnt/data/projects/Para-Minds-SpeechXI/.data/Record (online-voice-recorder.com) (1).wav"
         )
         
         speech_segments = []
@@ -247,9 +266,9 @@ if __name__ == "__main__":
             speech_segments.append(final_result["audio"])
         
         print(f"Total speech segments detected: {len(speech_segments)}")
-        for idx,speech in enumerate(speech_segments):
-            samples = np.frombuffer(speech, dtype=np.int16).astype(np.float32) / 32768.0
-            tensor_samples = torch.tensor(samples)
-            processor.save_audio(f"{idx}.wav",tensor_samples)
+        # for idx,speech in enumerate(speech_segments):
+        #     samples = np.frombuffer(speech, dtype=np.int16).astype(np.float32) / 32768.0
+        #     tensor_samples = torch.tensor(samples)
+        #     processor.save_audio(f"{idx}.wav",tensor_samples)
     except Exception as e:
         print(f"Error processing audio: {e}")
