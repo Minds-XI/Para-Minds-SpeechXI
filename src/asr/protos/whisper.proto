@@ -1,0 +1,50 @@
+syntax = "proto3";
+package asr.v1;
+
+service Asr {
+  rpc StreamingRecognize (stream StreamingRequest)
+      returns (stream StreamingResponse);
+}
+
+message StreamingRequest {
+  oneof payload {
+    SessionConfig config = 1;
+    AudioChunk audio = 2;
+    Control control = 3;
+  }
+}
+
+message SessionConfig {
+  string language_code = 1;   // e.g., "en", "ar"
+  int32 sample_rate_hz = 2;   // 16000
+  int32 channels = 3;         // 1
+  bool enable_partials = 4;   // true
+  string session_id = 5;      // optional
+}
+
+message AudioChunk {
+  bytes pcm16 = 1;            // little-endian PCM16
+  uint32 seq = 2;             // optional
+}
+
+message Control {
+  enum Type { EOS = 0; FLUSH = 1; RESET = 2; }
+  Type type = 1;
+}
+
+message WordInfo {
+  string word = 1;
+  float start_time_ms = 2;
+  float end_time_ms = 3;
+}
+
+message StreamingResponse {
+  string session_id = 1;
+  bool is_final = 2;
+  string text = 3;
+  float confidence = 4;       // optional/heuristic
+  repeated WordInfo words = 5;// optional if you have per-word timestamps
+  float stability = 6;        // optional [0..1] for partials
+  uint32 replaces = 7;        // result-id to replace (client-side UI)
+  string error = 8;
+}
