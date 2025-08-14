@@ -8,7 +8,9 @@ from asr.grpc_generated.asr_pb2 import TextStream
 from asr.grpc_generated import asr_pb2_grpc
 import riva.client
 from riva.client.argparse_utils import add_asr_config_argparse_parameters, add_connection_argparse_parameters
-
+from dotenv import load_dotenv
+import os
+load_dotenv()
 try:
     import riva.client.audio_io
 except ModuleNotFoundError as e:
@@ -128,13 +130,14 @@ class ASRService(AsrServiceG):
             raise
 
 def serve():
+    port = os.environ.get("SERVER_PORT")
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     asr_pb2_grpc.add_AsrServiceServicer_to_server(
         ASRService(), server
     )
-    server.add_insecure_port("[::]:50051")
+    server.add_insecure_port(f"[::]:{port}")
     server.start()
-    print("ASR gRPC server running on port 50051")
+    print(f"ASR gRPC server running on port {port}")
 
     server.wait_for_termination()
 
