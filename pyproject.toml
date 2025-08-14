@@ -3,7 +3,7 @@ name = "asr-service"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "grpcio>=1.67.1",
     "grpcio-tools>=1.67.1",
@@ -14,10 +14,13 @@ dependencies = [
     "pydub>=0.25.1",
     "torch>=2.7.1",
     "torchaudio>=2.7.1",
-    "numpy>=2.3.1",
     "omegaconf>=2.3.0",
     "noisereduce>=3.0.3",
     "webrtcvad>=2.0.10",
+    "faster-whisper>=1.2.0",
+    "loguru>=0.7.3",
+    "librosa>=0.11.0",
+    "scipy>=1.15.3",
 ]
 
 [dependency-groups]
