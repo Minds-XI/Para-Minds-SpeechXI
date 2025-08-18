@@ -6,38 +6,39 @@ import grpc
 from dotenv import load_dotenv
 from scipy.io import wavfile
 
-# NEW proto imports (match how you generated them for the server)
-from asr.grpc_generated.whisper_pb2 import StreamingRequest, SessionConfig, AudioChunk, Control
+from asr.transport.grpc.generated.whisper_pb2 import (
+    StreamingRequest, SessionConfig, AudioChunk, Control
+)
 from asr.grpc_generated import whisper_pb2_grpc
 
-# Your utils
 from asr.utils.audio import Frame
 from asr.vad.wbtrc import WebRTCVAD
 
 load_dotenv()
 
-SR = 16000           # server expects 16 kHz
-CHUNK_MS = 20        # per your code
-BYTES_PER_SAMPLE = 2 # int16
+SR = 16000            # server expects 16 kHz
+CHUNK_MS = 20         # 20 ms frames
+BYTES_PER_SAMPLE = 2  # int16
 CHANNELS = 1
 
 class AudioStreamClient:
     def __init__(self,
                  sample_rate: int = SR,
                  frame_len_ms: int = CHUNK_MS,
-                 padding_ms: int = 100):
+                 padding_ms: int = 40,
+                 use_vad: bool = False):
         self.pa = pyaudio.PyAudio()
         self.sample_rate = sample_rate
         self.frame_len = frame_len_ms
         self.frame_size = int(self.sample_rate * self.frame_len / 1000)  # samples per chunk
         self.counter_id = 0
+        self.use_vad = use_vad
 
-        # VAD: yields bytes for speech segments/chunks
         self.vad_service = WebRTCVAD(
             sample_rate=self.sample_rate,
             length=self.frame_len,
             padding_duration_ms=padding_ms
-        )
+        ) if use_vad else None
 
     def _open_stream(self):
         return self.pa.open(
@@ -49,13 +50,13 @@ class AudioStreamClient:
         )
 
     def request_generator(self, lang: str, session_id: str):
-        """Yield StreamingRequest messages:
-
-        1) SessionConfig (once)
-        2) AudioChunk messages (PCM16LE bytes) gated by VAD
-        3) Control(EOS) on exit
         """
-        # 1) Send config first
+        Yields StreamingRequest in this order:
+          1) SessionConfig (once)
+          2) AudioChunk (PCM16LE bytes) — optionally VAD-gated
+          3) Control(EOS) on exit
+        """
+        # 1) Send config first (server requires first message = config)
         yield StreamingRequest(config=SessionConfig(
             language_code=lang or "en",
             sample_rate_hz=self.sample_rate,
@@ -64,39 +65,49 @@ class AudioStreamClient:
             session_id=session_id
         ))
 
-        # 2) Stream mic -> VAD -> AudioChunk
         audio_stream = self._open_stream()
-        speech_segments = []
+        # dumped = []  # optional: for saving wav
+
         try:
             while True:
+                # Read 20 ms of int16 PCM
                 pcm_bytes = audio_stream.read(self.frame_size, exception_on_overflow=False)
                 if not isinstance(pcm_bytes, bytes):
                     print("⚠️  Frame is not bytes", file=sys.stderr)
                     continue
                 if len(pcm_bytes) != self.frame_size * BYTES_PER_SAMPLE:
-                    # Drop malformed frame to keep alignment
                     print(f"⚠️  Skipping bad frame: {len(pcm_bytes)} bytes", file=sys.stderr)
                     continue
 
-                frame_obj = Frame(bytes=pcm_bytes, timestamp=None, duration=None)
+                frames_to_send = [pcm_bytes]
+                if self.vad_service is not None:
+                    try:
+                        vad_out = self.vad_service.process_stream(
+                            audio=Frame(bytes=pcm_bytes, timestamp=None, duration=None)
+                        )
+                        # If VAD returns segments, use them; otherwise send nothing (gated)
+                        if vad_out:
+                            frames_to_send = [seg for seg in vad_out if seg]
+                        else:
+                            frames_to_send = []
+                    except Exception as e:
+                        # Fail-open on VAD errors
+                        print(f"[client] VAD error: {e} (sending raw)", file=sys.stderr)
+                        frames_to_send = [pcm_bytes]
 
-                # Your VAD returns zero or more 'result' chunks (bytes) per input frame
-                for result in self.vad_service.process_stream(audio=frame_obj):
-                    if not result:
-                        continue
-                    speech_segments.append(result)
-
-                    # Send as AudioChunk to server
+                for seg in frames_to_send:
                     yield StreamingRequest(
-                        audio=AudioChunk(pcm16=result, seq=self.counter_id)
+                        audio=AudioChunk(pcm16=seg, seq=self.counter_id)
                     )
                     self.counter_id += 1
+                    # dumped.append(seg)
 
         except KeyboardInterrupt:
             print("\n[client] mic stopped by user", file=sys.stderr)
         except Exception as e:
             print(f"[client] error: {e}", file=sys.stderr)
         finally:
+            # Close mic
             try:
                 audio_stream.stop_stream()
                 audio_stream.close()
@@ -107,20 +118,10 @@ class AudioStreamClient:
             except Exception:
                 pass
 
-            # 3) Send EOS so server finalizes
+            # 3) Tell server we're done so it can flush/finalize
             yield StreamingRequest(control=Control(type=Control.EOS))
 
-            # Optional: persist captured speech to a wav (float32 in [-1,1])
-            if speech_segments:
-                speech_np = np.concatenate([
-                    np.frombuffer(seg, dtype=np.int16).astype(np.float32) / 32768.0
-                    for seg in speech_segments
-                ])
-                try:
-                    wavfile.write('output_audio.wav', self.sample_rate, speech_np)
-                    print("[client] saved output_audio.wav", file=sys.stderr)
-                except Exception as e:
-                    print(f"[client] could not save wav: {e}", file=sys.stderr)
+
 
 
 def main():
@@ -128,24 +129,25 @@ def main():
     server_port = os.environ.get('SERVER_PORT', '8080')
     target = f"{server_ip}:{server_port}"
 
-    # Build gRPC stub for the NEW service
-    channel = grpc.insecure_channel(target, options=[
-        ("grpc.max_receive_message_length", 20 * 1024 * 1024),
-    ])
-    stub = whisper_pb2_grpc.AsrStub(channel)
+    lang = os.environ.get('ASR_LANG', 'en')
+    session_id = os.environ.get('SESSION_ID', 'mic-0')
+    # use_vad = os.environ.get('USE_VAD', '0') in ('1', 'true', 'True')
 
-    # Create stream generator
-    client = AudioStreamClient()
-    gen = client.request_generator(lang=os.environ.get('ASR_LANG', 'en'),
-                                   session_id=os.environ.get('SESSION_ID', 'mic-1'))
+    # Blocking client is fine with an aio server
+    with grpc.insecure_channel(target) as channel:
+        stub = whisper_pb2_grpc.AsrStub(channel)
+        client = AudioStreamClient(use_vad=True)
+        gen = client.request_generator(lang=lang, session_id=session_id)
 
-    # Call the bidi RPC
-    try:
-        for resp in stub.StreamingRecognize(gen, wait_for_ready=True):
-            print(("FINAL" if resp.is_final else "PARTIAL") + f": {resp.text}", flush=True)
-    except grpc.RpcError as e:
-        print(f"[client] RPC failed: {e.code().name} {e.details()}", file=sys.stderr)
-        sys.exit(1)
+        try:
+            # bidi streaming: iterate server responses as they arrive
+            for resp in stub.StreamingRecognize(gen, wait_for_ready=True):
+                label = "FINAL" if resp.is_final else "PARTIAL"
+                # You can also print timestamps: resp.segment_start_ms / segment_end_ms
+                print(f"{label}: {resp.text}", flush=True)
+        except grpc.RpcError as e:
+            print(f"[client] RPC failed: {e.code().name} {e.details()}", file=sys.stderr)
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
