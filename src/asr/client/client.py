@@ -2,8 +2,8 @@ import os
 import numpy as np
 import pyaudio
 import grpc
-from asr.grpc_generated.asr_pb2 import AudioStream
-from asr.grpc_generated.asr_pb2_grpc import AsrServiceStub
+from asr.transport.grpc.generated.asr_pb2 import AudioStream
+from asr.transport.grpc.generated.asr_pb2_grpc import AsrServiceStub
 from dotenv import load_dotenv
 from asr.utils.audio import Frame
 from asr.vad.wbtrc import WebRTCVAD
@@ -62,7 +62,7 @@ class AudioStreamClient:
             print(e)
 
 def main():
-    cred = f"{os.environ.get("SERVER_IP")}:{os.environ.get("SERVER_PORT")}"
+    cred = f"{os.environ.get('SERVER_IP')}:{os.environ.get('SERVER_PORT')}"
     channel = grpc.insecure_channel(cred)
     stub = AsrServiceStub(channel)
     stream = AudioStreamClient()
