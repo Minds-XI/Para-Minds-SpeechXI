@@ -40,7 +40,7 @@ class WebRTCVAD(VADServiceBase):
         is_speech = self.vad.is_speech(frame.bytes, self.sample_rate)
         
         # Debug output for speech detection
-        sys.stdout.write('1' if is_speech else '0')
+        # sys.stdout.write('1' if is_speech else '0')
 
         if not self.triggered:
             # If not triggered, append frame and check if we should trigger
@@ -48,7 +48,7 @@ class WebRTCVAD(VADServiceBase):
             num_voiced = len([f for f, speech in self.ring_buffer if speech])
             if num_voiced > 0.9 * self.ring_buffer.maxlen:
                 self.triggered = True
-                sys.stdout.write('+(%s)' % (self.ring_buffer[0][0].timestamp,))
+                # sys.stdout.write('+(%s)' % (self.ring_buffer[0][0].timestamp,))
                 for f, s in self.ring_buffer:
                     self.voiced_frames.append(f)
                 self.ring_buffer.clear()
@@ -58,36 +58,11 @@ class WebRTCVAD(VADServiceBase):
             self.ring_buffer.append((frame, is_speech))
             num_unvoiced = len([f for f, speech in self.ring_buffer if not speech])
             if num_unvoiced > 0.9 * self.ring_buffer.maxlen:
-                sys.stdout.write('-(%s)' % (frame.timestamp + frame.duration))
+                # sys.stdout.write('-(%s)' % (frame.timestamp + frame.duration))
                 self.triggered = False
                 yield b''.join([f.bytes for f in self.voiced_frames])
                 self.ring_buffer.clear()
                 self.voiced_frames = []
 
-        sys.stdout.write('\n')
+        # sys.stdout.write('\n')
 
-        # If we have any leftover voiced audio when we run out of input,
-        # yield it.
-        if self.voiced_frames:
-            yield b''.join([f.bytes for f in self.voiced_frames])
-
-if __name__ == "__main__":
-        vad_service = WebRTCVAD(sample_rate=16000,
-                                length=20,
-                                padding_duration_ms=100
-                                )
-        try:
-            audio_chunks = read_audio_as_stream(
-                file_path="/mnt/data/projects/Para-Minds-SpeechXI/.data/0.wav"
-            )
-            
-            speech_segments = []
-            # all_chunks = list(audio_chunks)
-            for i, chunk in enumerate(audio_chunks):
-                for result in vad_service.process_stream(audio=chunk):
-                    print(f"✅ speech in chunk index {i}")
-                    speech_segments.append(result)
-                # print(chunk.duration, len(chunk.bytes))
-        except:
-            pass
-        
