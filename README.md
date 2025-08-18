@@ -30,3 +30,28 @@ uv run server.py   --server grpc.nvcf.nvidia.com:443   --use-ssl   --metadata fu
 - **`--stop-threshold`**: Threshold value for stopping the audio.
 - **`--stop-history-eou`**: Defines the end-of-utterance (EOU) history stop criteria.
 - **`--stop-threshold-eou`**: Defines the threshold value for the EOU stop.
+
+
+### Project Dependency
+1. Create env using uv
+  ```bash
+    uv venv
+  ```
+2. install prerequisites packages
+  ```bash
+  sudo apt update
+
+  sudo apt install python3-dev portaudio19-dev
+
+  sudo apt install build-essential python3-dev
+  ```
+3. sync from pyproject.toml
+  ```bash
+  uv sync
+  ```
+
+### Project Structure Methodology
+```bash
+entrypoint → transport/grpc → application → domain
+                         └→ infrastructure(adapter) → core
+```
