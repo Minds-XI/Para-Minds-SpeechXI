@@ -7,9 +7,15 @@ from dotenv import load_dotenv
 from scipy.io import wavfile
 
 from asr.transport.grpc.generated.whisper_pb2 import (
-    StreamingRequest, SessionConfig, AudioChunk, Control
+    AudioChunk
 )
-from asr.grpc_generated import whisper_pb2_grpc
+from confluent_kafka import Producer
+from confluent_kafka.serialization import SerializationContext, MessageField
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.protobuf import ProtobufSerializer, ProtobufDeserializer
+
+
+
 
 from asr.utils.audio import Frame
 from asr.vad.wbtrc import WebRTCVAD
@@ -20,13 +26,28 @@ SR = 16000            # server expects 16 kHz
 CHUNK_MS = 20         # 20 ms frames
 BYTES_PER_SAMPLE = 2  # int16
 CHANNELS = 1
+EXTERNAL_HOST = os.environ.get("EXTERNAL_HOST")
+SCHEMA_REGISTRY_PORT = os.environ.get("SCHEMA_REGISTRY_PORT")
+KAFKA_EXTERNAL_PORT = os.environ.get("KAFKA_EXTERNAL_PORT")
+SCHEMA_REGISTRY_URL = f"http://{EXTERNAL_HOST}:{SCHEMA_REGISTRY_PORT}"
+# Schema Registry client
+sr = SchemaRegistryClient({"url": SCHEMA_REGISTRY_URL})
 
+serializer = ProtobufSerializer(AudioChunk, sr)
+deserializer = ProtobufDeserializer(AudioChunk)
 class AudioStreamClient:
     def __init__(self,
+                 client_id:str,
+                 producer:Producer,
+                 topic_name:str,
                  sample_rate: int = SR,
                  frame_len_ms: int = CHUNK_MS,
                  padding_ms: int = 40,
-                 use_vad: bool = False):
+                 use_vad: bool = False,
+                 ):
+        self.client_id = client_id
+        self.topic_name =topic_name
+        self.producer = producer
         self.pa = pyaudio.PyAudio()
         self.sample_rate = sample_rate
         self.frame_len = frame_len_ms
@@ -37,7 +58,8 @@ class AudioStreamClient:
         self.vad_service = WebRTCVAD(
             sample_rate=self.sample_rate,
             length=self.frame_len,
-            padding_duration_ms=padding_ms
+            padding_duration_ms=padding_ms,
+            mode=2
         ) if use_vad else None
 
     def _open_stream(self):
@@ -49,21 +71,7 @@ class AudioStreamClient:
             frames_per_buffer=self.frame_size,
         )
 
-    def request_generator(self, lang: str, session_id: str):
-        """
-        Yields StreamingRequest in this order:
-          1) SessionConfig (once)
-          2) AudioChunk (PCM16LE bytes) — optionally VAD-gated
-          3) Control(EOS) on exit
-        """
-        # 1) Send config first (server requires first message = config)
-        yield StreamingRequest(config=SessionConfig(
-            language_code=lang or "en",
-            sample_rate_hz=self.sample_rate,
-            channels=CHANNELS,
-            enable_partials=True,
-            session_id=session_id
-        ))
+    def request_generator(self):
 
         audio_stream = self._open_stream()
         # dumped = []  # optional: for saving wav
@@ -96,11 +104,16 @@ class AudioStreamClient:
                         frames_to_send = [pcm_bytes]
 
                 for seg in frames_to_send:
-                    yield StreamingRequest(
-                        audio=AudioChunk(pcm16=seg, seq=self.counter_id)
+                    event_audio=AudioChunk(pcm16=seg, seq=self.counter_id)
+                    self.producer.produce(
+                        self.topic_name,
+                        key=self.client_id,
+                        value=serializer(event_audio, SerializationContext(self.topic_name, MessageField.VALUE))
                     )
                     self.counter_id += 1
                     # dumped.append(seg)
+                if self.counter_id % 100 == 0:
+                    self.producer.flush()
 
         except KeyboardInterrupt:
             print("\n[client] mic stopped by user", file=sys.stderr)
@@ -118,36 +131,21 @@ class AudioStreamClient:
             except Exception:
                 pass
 
-            # 3) Tell server we're done so it can flush/finalize
-            yield StreamingRequest(control=Control(type=Control.EOS))
-
-
-
 
 def main():
-    server_ip = os.environ.get('SERVER_IP', '127.0.0.1')
-    server_port = os.environ.get('SERVER_PORT', '8080')
-    target = f"{server_ip}:{server_port}"
-
-    lang = os.environ.get('ASR_LANG', 'en')
-    session_id = os.environ.get('SESSION_ID', 'mic-0')
-    # use_vad = os.environ.get('USE_VAD', '0') in ('1', 'true', 'True')
-
-    # Blocking client is fine with an aio server
-    with grpc.insecure_channel(target) as channel:
-        stub = whisper_pb2_grpc.AsrStub(channel)
-        client = AudioStreamClient(use_vad=True)
-        gen = client.request_generator(lang=lang, session_id=session_id)
-
-        try:
-            # bidi streaming: iterate server responses as they arrive
-            for resp in stub.StreamingRecognize(gen, wait_for_ready=True):
-                label = "FINAL" if resp.is_final else "PARTIAL"
-                # You can also print timestamps: resp.segment_start_ms / segment_end_ms
-                print(f"{label}: {resp.text}", flush=True)
-        except grpc.RpcError as e:
-            print(f"[client] RPC failed: {e.code().name} {e.details()}", file=sys.stderr)
-            sys.exit(1)
+    # Producer
+    producer = Producer({
+        "bootstrap.servers": f"{EXTERNAL_HOST}:{KAFKA_EXTERNAL_PORT}",
+        "acks": "0",
+        "enable.idempotence": True,
+        "linger.ms": 5,
+        })
+    client = AudioStreamClient(client_id="client_1",
+                               producer=producer,
+                               topic_name="raw-audio",
+                               use_vad= True
+                               )
+    client.request_generator()
 
 if __name__ == "__main__":
     main()
