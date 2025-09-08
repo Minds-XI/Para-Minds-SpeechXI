@@ -137,7 +137,7 @@ def main():
     producer = Producer({
         "bootstrap.servers": f"{EXTERNAL_HOST}:{KAFKA_EXTERNAL_PORT}",
         "acks": "0",
-        "enable.idempotence": True,
+        # "enable.idempotence": True,
         "linger.ms": 5,
         })
     client = AudioStreamClient(client_id="client_1",
