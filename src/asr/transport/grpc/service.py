@@ -2,25 +2,46 @@
 import asyncio
 import os
 
-import grpc
 from asr.application.pipeline import StreamingPipeline
 from asr.application.sentinels import EOS
 from asr.application.session import ConnectionManager
 from asr.core.whisper.utils import load_asr_model, load_audio_chunk, online_factory
-from asr.transport.grpc.generated import whisper_pb2_grpc
+from confluent_kafka import Consumer
+from confluent_kafka.schema_registry.protobuf import ProtobufDeserializer
+from confluent_kafka.serialization import SerializationContext, MessageField
+from confluent_kafka.schema_registry.protobuf import ProtobufSerializer, ProtobufDeserializer
+from confluent_kafka import Producer
+
+
 from loguru import logger
 import sys
+from asr.domain.entities import TextChunk
 from asr.transport.grpc.generated.whisper_pb2 import StreamingResponse,AudioChunk
 SAMPLING_RATE = 16000
 
-class AsrService(whisper_pb2_grpc.AsrServicer):
-    def __init__(self, args):
+
+class AsrService:
+    def __init__(self,
+                args,
+                raw_audio_consumer:Consumer,
+                raw_audio_deserializer:ProtobufDeserializer,
+                req_topic_name:str,
+                text_producer:Producer,
+                text_producer_topic:str,
+                response_serializer:ProtobufSerializer
+                 ):
         self.args = args
         self.asr, self.tokenizer = load_asr_model(args)  # existing init
         self.min_chunk = args.min_chunk_size
         self.warmed = False
         self.sessions = {}
         self._warmup_if_needed()
+        self.raw_audio_consumer = raw_audio_consumer
+        self.raw_audio_deserializer = raw_audio_deserializer
+        self.req_topic_name = req_topic_name
+        self.text_producer = text_producer
+        self.text_producer_topic = text_producer_topic
+        self.response_serializer = response_serializer
 
     def _warmup_if_needed(self):
         msg = ("Whisper is not warmed up. The first chunk "
@@ -41,89 +62,74 @@ class AsrService(whisper_pb2_grpc.AsrServicer):
         # Fresh state per stream, reusing the shared model + tokenizer
         return online_factory(self.asr, self.args, tokenizer=self.tokenizer, logfile=sys.stderr)
     
-    async def _audio_produce(self,
-                       request_iter,
-                       connection:ConnectionManager,
-                       ):
-        try:
-            async for request in request_iter:
-                if request.HasField("audio"):
-                    await connection.write_to_audio_queue(request.audio)
-        except Exception as e:
-            logger.exception("Error producing audio chunks: %s", e)
-        finally:
-            # signal the end of audio to the processor
-            await connection.write_to_audio_queue(EOS)
-
     async def _emit_text(self,
                          connection:ConnectionManager):
          while True:
-            text_chunk = await connection.read_from_text_queue()
+            text_chunk:TextChunk = await connection.read_from_text_queue()
             if text_chunk is EOS:
                 break
             if text_chunk:
-                yield StreamingResponse(
-                    session_id=connection.session_id,
-                    is_final=False,
-                    text=text_chunk.sentence,
-                    # segment_start_ms=text_chunk.begin,
-                    # segment_end_ms=text_chunk.end,
+                text_event = StreamingResponse(session_id=connection.session_id,
+                                               text=text_chunk.sentence,
+                                               is_final=False)
+                self.text_producer.produce(
+                        self.text_producer_topic,
+                        key=connection.session_id,
+                        value=self.response_serializer(text_event,
+                                                   SerializationContext(self.text_producer_topic, MessageField.VALUE))
                 )
 
+    async def _ensure_session(self, session_id: str) -> ConnectionManager:
+        """Create session (conn + processor) once per session_id."""
+        if session_id in self.sessions:
+            return self.sessions[session_id]["conn"]
 
-    async def StreamingRecognize(self, request_iter, context):
-        cfg = None
-        loop = asyncio.get_running_loop()
-        connection_manager =None
+        # new session
+        asr_processor = self._new_online()
+        asr_processor.init()
 
+        conn = ConnectionManager(session_id=session_id, asr_processor=asr_processor)
+        server_processor = StreamingPipeline(connection=conn, min_chunk=self.min_chunk)
 
-        # Read the first message (must be config) asynchronously
+        # long-lived processor task
+        proc_task = asyncio.create_task(server_processor.process(), name=f"proc-{session_id}")
+
+        # long-lived emitter task
+        emitter_task = asyncio.create_task(self._emit_text(conn), name=f"emit-{session_id}")
+
+        self.sessions[session_id] = {
+            "conn": conn,
+            "proc_task": proc_task,
+            "emitter_task": emitter_task
+        }
+
+        logger.info(f"[asr] session created: {session_id}")
+        return conn
+
+    async def _route_audio(self, session_id: str, audio_evt: AudioChunk):
+        """Push incoming audio into the session queue (backpressure-aware)."""
         try:
-            header_req = await request_iter.__anext__()  # <-- async header read
-        except StopAsyncIteration:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Missing config header")
-            return
+            conn = await self._ensure_session(session_id)
+            await conn.write_to_audio_queue(audio_evt)
+            return conn
+        except Exception as e:
+            logger.exception(f"[asr] enqueue failed for {session_id}: {e}")
 
-        cfg = header_req.config
-        if cfg.sample_rate_hz and cfg.sample_rate_hz != SAMPLING_RATE:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT,
-                                f"Only {SAMPLING_RATE} Hz supported")
-            return 
-        if cfg.channels and cfg.channels not in (0, 1, 2):
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT,
-                                "Only mono/stereo supported")
-            return
-        
-        session_id = cfg.session_id 
-        if  session_id not in self.sessions:
-            asr_processor = self._new_online()
-            asr_processor.init()
-            connection_manager = ConnectionManager(session_id=session_id,
-                                                            asr_processor=asr_processor)
-            self.sessions[session_id] = connection_manager
-            
-        else:
-            connection_manager = self.sessions.get(session_id)
-            
-        server_processor = StreamingPipeline(connection=connection_manager,
-                                           min_chunk=self.min_chunk)
-        # task 1  to push the received audio to the q
-        audio_prod_t = loop.create_task(self._audio_produce(request_iter=request_iter,
-                                                   connection=connection_manager),
-                                                   name="audio_producer")
-        
-        # task 2 process the audio and produce text
-        audio_proc_t = loop.create_task(server_processor.process(),name="audio_processor")
-
-        # task 3 push the text to the client 
+    async def StreamingRecognize(self):
         try:
-            # 2) Stream results from the async generator
-            async for resp in self._emit_text(connection=connection_manager):
-                yield resp
+            while True:
+                msg = self.raw_audio_consumer.poll(timeout=0.2)
+                if msg is None:
+                    await asyncio.sleep(0.01)
+                    continue
+                session_id = msg.key().decode() if msg.key() else "unknown"
+                audio_bytes = msg.value() 
+                audio_event:AudioChunk = self.raw_audio_deserializer(audio_bytes,SerializationContext(topic=self.req_topic_name,field=MessageField.VALUE))
+                # await connection_manager.write_to_audio_queue(audio_event)
+                
+                _ = await self._route_audio(session_id, audio_event)
 
+        except Exception as e:
+            logger.exception(f"[asr] {e}")
         finally:
-            # 3) Ensure cleanup if the client disconnects or the stream ends
-            for t in (audio_prod_t, audio_proc_t):
-                if not t.done():
-                    t.cancel()
-            await asyncio.gather(audio_prod_t, audio_proc_t, return_exceptions=True)
+            self.raw_audio_consumer.close()
