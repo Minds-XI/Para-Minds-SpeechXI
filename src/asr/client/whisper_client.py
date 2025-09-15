@@ -1,11 +1,7 @@
 import os
 import sys
-import numpy as np
 import pyaudio
-import grpc
 from dotenv import load_dotenv
-from scipy.io import wavfile
-
 from asr.transport.grpc.generated.whisper_pb2 import (
     AudioChunk
 )
