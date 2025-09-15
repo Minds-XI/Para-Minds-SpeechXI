@@ -55,3 +55,8 @@ uv run server.py   --server grpc.nvcf.nvidia.com:443   --use-ssl   --metadata fu
 entrypoint → transport/grpc → application → domain
                          └→ infrastructure(adapter) → core
 ```
+
+# Run docker services
+```bash
+docker compose -f docker/docker-compose-kafka.yaml -f docker/docker-compose-mongodb.yaml -f docker/docker-compose-connect.yaml --env-file .env up
+```
