@@ -7,6 +7,6 @@ class FilterSpeechUC:
         self.vad_operator = vad_operator
     
     def filter(self,frame:Frame)->VADResponse:
-        speeches = self.vad_operator.process_stream(frame=frame)
+        speeches = self.vad_operator.process_stream(audio=frame)
         return VADResponse(frames=speeches)
     
