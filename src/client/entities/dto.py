@@ -30,9 +30,9 @@ class VADResponse:
     
 @dataclass
 class KafkaConfig:
-    external_host = os.environ.get("EXTERNAL_HOST")
-    schema_registry_port = os.environ.get("SCHEMA_REGISTRY_PORT")
-    external_port = os.environ.get("KAFKA_EXTERNAL_PORT")
+    external_host:str = os.environ.get("EXTERNAL_HOST")
+    schema_registry_port:str = os.environ.get("SCHEMA_REGISTRY_PORT")
+    external_port:str = os.environ.get("KAFKA_EXTERNAL_PORT")
 
     @property
     def schema_registry_url(self):
