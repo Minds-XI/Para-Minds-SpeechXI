@@ -1,0 +1,20 @@
+services:
+    minds-client:
+      build:
+        context: ..
+        dockerfile: docker/Dockerfile.client
+        target: Development
+      env_file: ../.env
+      container_name: minds-client
+      restart: unless-stopped
+      environment:
+        # Load all variables from .env
+        PULSE_SERVER: unix:/run/user/1000/pulse/native
+      devices:
+        - "/dev/snd:/dev/snd"
+      group_add:
+        - audio
+      volumes:
+        - "/run/user/1000/pulse/native:/run/user/1000/pulse/native"
+      tty: true
+      stdin_open: true
