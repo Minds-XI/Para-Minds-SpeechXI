@@ -28,9 +28,10 @@ class WebRTCVAD(IVADService):
         return super().process_file(file_path)
     
     def process_stream(self, audio:Frame):
-         yield from  self._vad_collector(frame=audio,
-                                   )
-
+        output_frames = []
+        for frames in self._vad_collector(audio):
+            output_frames.extend(frames)
+        return output_frames
 
     def _vad_collector(self,
                        frame: Frame,
