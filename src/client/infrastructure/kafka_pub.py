@@ -7,17 +7,18 @@ from confluent_kafka.schema_registry.protobuf import ProtobufSerializer
 from shared.protos_gen.whisper_pb2 import AudioChunk
 class KafkaPublisher(IMessagePublisher):
     def __init__(self,
+                 config:KafkaConfig,
                  topic_name:str,
                  key:str):
         super().__init__()
         self.producer = Producer({
-            "bootstrap.servers": f"{KafkaConfig.external_host}:{KafkaConfig.external_port}",
+            "bootstrap.servers": f"{config.external_host}:{config.external_port}",
             "acks": "0",
             # "enable.idempotence": True,
             "linger.ms": 5,
         })
         # Schema Registry client
-        self.schema_registry_client = SchemaRegistryClient({"url": KafkaConfig.schema_registry_url})
+        self.schema_registry_client = SchemaRegistryClient({"url": config.schema_registry_url})
         self.serializer = ProtobufSerializer(AudioChunk, self.schema_registry_client)
         self.counter_id = 0
         self.topic_name= topic_name
