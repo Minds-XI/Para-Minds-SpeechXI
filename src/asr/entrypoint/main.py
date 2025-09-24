@@ -3,10 +3,10 @@ import os
 import grpc
 from loguru import logger
 from asr.core.whisper.utils import add_shared_args
-from asr.transport.grpc.generated import whisper_pb2_grpc
+from shared.protos_gen import whisper_pb2_grpc
 from asr.transport.grpc.service import AsrService
 from confluent_kafka import Consumer,Producer
-from asr.transport.grpc.generated.whisper_pb2 import StreamingResponse,AudioChunk
+from shared.protos_gen.whisper_pb2 import StreamingResponse,AudioChunk
 from confluent_kafka.schema_registry.protobuf import ProtobufSerializer, ProtobufDeserializer
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from dotenv import load_dotenv
