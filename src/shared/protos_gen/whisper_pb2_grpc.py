@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from asr.transport.grpc.generated import whisper_pb2 as whisper__pb2
+from shared.protos_gen import whisper_pb2 as whisper__pb2
 
 GRPC_GENERATED_VERSION = '1.67.1'
 GRPC_VERSION = grpc.__version__

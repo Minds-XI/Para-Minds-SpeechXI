@@ -1,8 +1,9 @@
 from abc import ABC,abstractmethod
-import numpy as np
-class VADServiceBase(ABC):
+from client.entities.dto import Frame
+
+class IVADService(ABC):
     @abstractmethod
-    def process_stream(self,audio:bytes):
+    def process_stream(self,audio:Frame):
         pass
     
     @abstractmethod

@@ -1,12 +1,11 @@
 import collections
-import sys
-from typing import Generator
-from asr.utils.audio import Frame, read_audio_as_stream
-from asr.vad.base import VADServiceBase
+from typing import Generator, List
+from client.entities.dto import Frame
+from client.ports.speech_filter import IVADService
 import webrtcvad
 
 
-class WebRTCVAD(VADServiceBase):
+class WebRTCVAD(IVADService):
     def __init__(self,
                  sample_rate:int,
                  length: int,
@@ -29,13 +28,14 @@ class WebRTCVAD(VADServiceBase):
         return super().process_file(file_path)
     
     def process_stream(self, audio:Frame):
-         yield from  self._vad_collector(frame=audio,
-                                   )
-
+        output_frames = []
+        for frames in self._vad_collector(audio):
+            output_frames.extend(frames)
+        return output_frames
 
     def _vad_collector(self,
                        frame: Frame,
-                       )->Generator[bytes,None,None]:
+                       )->Generator[List[Frame],None,None]:
         """Filters out non-voiced audio frames."""
         is_speech = self.vad.is_speech(frame.bytes, self.sample_rate)
         
@@ -60,9 +60,7 @@ class WebRTCVAD(VADServiceBase):
             if num_unvoiced > 0.9 * self.ring_buffer.maxlen:
                 # sys.stdout.write('-(%s)' % (frame.timestamp + frame.duration))
                 self.triggered = False
-                yield b''.join([f.bytes for f in self.voiced_frames])
+                yield self.voiced_frames
                 self.ring_buffer.clear()
                 self.voiced_frames = []
-
-        # sys.stdout.write('\n')
 

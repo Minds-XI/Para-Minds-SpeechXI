@@ -16,7 +16,7 @@ from confluent_kafka import Producer
 from loguru import logger
 import sys
 from asr.domain.entities import TextChunk
-from asr.transport.grpc.generated.whisper_pb2 import StreamingResponse,AudioChunk
+from shared.protos_gen.whisper_pb2 import StreamingResponse,AudioChunk
 SAMPLING_RATE = 16000
 
 

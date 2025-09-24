@@ -1,7 +1,7 @@
 import asyncio
 from typing import Union
 from asr.domain.entities import TextChunk
-from asr.transport.grpc.generated.whisper_pb2 import AudioChunk
+from shared.protos_gen.whisper_pb2 import AudioChunk
 
 from asr.core.whisper.processor import OnlineASRProcessor
 
