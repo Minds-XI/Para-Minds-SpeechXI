@@ -4,7 +4,7 @@ from typing import Optional
 import numpy as np
 from asr.application.sentinels import EOS
 from asr.application.session import ConnectionManager
-from asr.transport.grpc.generated.whisper_pb2 import AudioChunk
+from shared.protos_gen.whisper_pb2 import AudioChunk
 from asr.domain.entities import TextChunk
 from loguru import logger
 SAMPLING_RATE = 16000
