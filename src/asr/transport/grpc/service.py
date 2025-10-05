@@ -19,6 +19,13 @@ from asr.domain.entities import TextChunk
 from shared.protos_gen.whisper_pb2 import StreamingResponse,AudioChunk
 SAMPLING_RATE = 16000
 
+def delivery_report(err, msg):
+    if err is not None:
+        logger.error(f"[asr] Delivery failed: {err}")
+    else:
+        logger.info(f"[asr] Delivered message to {msg.topic()} "
+                    f"[{msg.partition()}] @ offset {msg.offset()}")
+
 
 class AsrService:
     def __init__(self,
@@ -69,6 +76,7 @@ class AsrService:
             if text_chunk is EOS:
                 break
             if text_chunk:
+                logger.info("sending text chunks")
                 text_event = StreamingResponse(session_id=connection.session_id,
                                                text=text_chunk.sentence,
                                                is_final=False)
@@ -76,8 +84,11 @@ class AsrService:
                         self.text_producer_topic,
                         key=connection.session_id,
                         value=self.response_serializer(text_event,
-                                                   SerializationContext(self.text_producer_topic, MessageField.VALUE))
+                                                   SerializationContext(self.text_producer_topic, MessageField.VALUE)),
+                        callback=delivery_report
                 )
+                self.text_producer.poll(0)
+
 
     async def _ensure_session(self, session_id: str) -> ConnectionManager:
         """Create session (conn + processor) once per session_id."""
@@ -133,3 +144,4 @@ class AsrService:
             logger.exception(f"[asr] {e}")
         finally:
             self.raw_audio_consumer.close()
+            self.text_producer.flush()
