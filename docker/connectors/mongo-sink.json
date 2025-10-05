@@ -5,13 +5,13 @@
     "tasks.max": "1",
     "topics": "text-chunk",
 
-    "connection.uri": "mongodb://${env:MONGO_USER}:${env:MONGO_PASSWORD}@mongodb:27017/?authSource=admin",
+    "connection.uri": "mongodb://admin:password@mongodb:27017/?authSource=admin",
     "database": "kafka_sink",
     "collection": "events",
 
     "key.converter": "org.apache.kafka.connect.storage.StringConverter",
 
-    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter": "io.confluent.connect.protobuf.ProtobufConverter",
     "value.converter.schema.registry.url": "http://schema-registry:8081"
   }
 }
