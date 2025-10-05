@@ -34,8 +34,8 @@ services:
       CONNECT_INTERNAL_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
 
 
-      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
-      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER:  io.confluent.connect.protobuf.ProtobufConverter
+      CONNECT_VALUE_CONVERTER:  io.confluent.connect.protobuf.ProtobufConverter
       CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
       CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
     
@@ -46,22 +46,22 @@ services:
       # mongo db config
       MONGO_USER: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_PASS: ${MONGO_INITDB_ROOT_PASSWORD}
-    volumes:
-      - connect-data:/usr/share/confluent-hub-components
+    # volumes:
+    #   - connect-data:/usr/share/confluent-hub-components
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8083/connector-plugins"]
       interval: 5s
       timeout: 3s
       retries: 30
   connect-init:
-    image: alpine:3.22.1
+    image: bash:5.2   # or debian:bullseye-slim, ubuntu:22.04, etc.
     depends_on:
       connect:
         condition: service_healthy
     networks: [localnet]
     environment:
       CONNECT_URL: "http://connect:8083"
-      CONNECTOR_DIR: "/connectors"
+      CONNECTOR_DIR: "./connectors"
       REQUIRED_PLUGIN_CLASSES: "com.mongodb.kafka.connect.MongoSinkConnector"
     volumes:
       - ./connectors:/connectors:ro
