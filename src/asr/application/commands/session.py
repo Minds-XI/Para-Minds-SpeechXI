@@ -1,8 +1,8 @@
 import asyncio
 from typing import Union
 from asr.application.ports.asr_processor import IASRProcessor
-from asr.domain.entities import TextChunk
-from shared.protos_gen.whisper_pb2 import AudioChunk
+from asr.domain.entities import AudioChunkDTO, TextChunk
+# from shared.protos_gen.whisper_pb2 import A
 
 class ConnectionManager:
     def __init__(self,
@@ -15,14 +15,14 @@ class ConnectionManager:
         self.last_end = None
         self.is_first = True
 
-    async def write_to_audio_queue(self, item:Union[AudioChunk,object]):  
+    async def write_to_audio_queue(self, item:Union[AudioChunkDTO,object]):  
         await self.audio_queue.put(item)
 
-    async def read_from_audio_queue(self):
+    async def read_from_audio_queue(self)->Union[AudioChunkDTO,object]:
         return await self.audio_queue.get()
 
     async def write_to_text_queue(self, item:Union[TextChunk,object]):  
         await self.text_queue.put(item)
 
-    async def read_from_text_queue(self):
+    async def read_from_text_queue(self)->Union[TextChunk,object]:
         return await self.text_queue.get()
