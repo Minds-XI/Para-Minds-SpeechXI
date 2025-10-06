@@ -1,11 +1,10 @@
 import asyncio
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
-from asr.application.sentinels import EOS
-from asr.application.session import ConnectionManager
-from shared.protos_gen.whisper_pb2 import AudioChunk
-from asr.domain.entities import TextChunk
+from asr.domain.sentinels import EOS
+from asr.application.commands.session import ConnectionManager
+from asr.domain.entities import ASRProcessorResponse, AudioChunkDTO, TextChunk
 from loguru import logger
 SAMPLING_RATE = 16000
 FINAL_CHUNK_TIMEOUT = 0.2  # seconds to wait before forcing flush of last audio
@@ -19,12 +18,12 @@ class StreamingPipeline:
         self.connection = connection  
         self.min_chunk = min_chunk
 
-    async def receive_audio_chunk(self) -> tuple[Optional[np.ndarray], bool]:
+    async def receive_audio_chunk(self) -> Tuple[Optional[AudioChunkDTO], bool]:
         """
         Collects audio until min_chunk is reached or EOS is received.
         Returns (audio_array or EOS, is_eos)
         """
-        out = []
+        out:List[AudioChunkDTO] = []
         minlimit = self.min_chunk * SAMPLING_RATE
         is_eos = False
 
@@ -33,7 +32,6 @@ class StreamingPipeline:
                 # Wait for audio chunk with timeout to allow final flush
                 item = await asyncio.wait_for(self.connection.read_from_audio_queue(), timeout=FINAL_CHUNK_TIMEOUT)
             except asyncio.TimeoutError:
-                # No new audio, flush what we have
                 if not out:
                     return None, False
                 break
@@ -44,17 +42,16 @@ class StreamingPipeline:
                     return EOS, True
                 break
 
-            chunk: AudioChunk = item
+            chunk: AudioChunkDTO = item
             if chunk is None:
                 continue
 
-            raw = np.frombuffer(chunk.pcm16, dtype="<i2").astype(np.float32) / 32768.0
-            out.append(raw)
+            out.append(chunk)
 
         if not out:
             return None, is_eos
 
-        conc = np.concatenate(out)
+        conc = self.concatenate_audio_chunks(out)
         # Handle first chunk if too small
         if self.connection.is_first and len(conc) < minlimit:
             return None, is_eos
@@ -63,36 +60,46 @@ class StreamingPipeline:
         return conc, is_eos
 
 
+    def concatenate_audio_chunks(self,chunks:List[AudioChunkDTO])->AudioChunkDTO:
+        if chunks is None:
+            return None
+        
+        seq = chunks[-1].seq
+        session_id = chunks[0].session_id
 
-    def format_output_transcript(self, o: tuple):
+        res_np = np.concatenate([chunk.audio_data for chunk in chunks])
+
+    
+        return AudioChunkDTO(audio_data=res_np,
+                             session_id=session_id,
+                             seq=seq)
+    
+    def format_output_transcript(self, response: ASRProcessorResponse):
         # Expect (beg_s, end_s, text)
-        if not o:
+        if not response:
             return None
-        beg_s, end_s, text = o
+        # beg_s, end_s, text = o
         # Drop placeholders / empties
-        if beg_s is None or end_s is None:
+        if response.start is None or response.end is None:
             return None
-        if not text or not text.strip():
+        if not response.sentence or not response.sentence.strip():
             return None
 
-        beg, end = beg_s * 1000, end_s * 1000
+        beg, end = response.start * 1000, response.end * 1000
         if self.connection.last_end is not None:
             beg = max(beg, self.connection.last_end)
         self.connection.last_end = end
 
-        return TextChunk(begin=beg, end=end, sentence=text)
+        return TextChunk(begin=beg, end=end, sentence=response.sentence,session_id=self.connection.session_id)
 
-    async def send_result(self, o):
-        text_chunk = self.format_output_transcript(o)
+    async def send_result(self, response: ASRProcessorResponse):
+        text_chunk = self.format_output_transcript(response)
         if text_chunk is not None:
             await self.connection.write_to_text_queue(item=text_chunk)
     
     async def _drain_and_finish(self):
-        finalize = getattr(self.connection.asr_processor, "finish", None)
-        if callable(finalize):
-            outs = finalize()
-            for seg in outs or []:
-                await self.send_result(seg)
+        response = self.connection.asr_processor.finish()
+        await self.send_result(response=response)
 
     async def process(self):
         """
@@ -115,10 +122,10 @@ class StreamingPipeline:
                     continue
 
                 # Insert audio into ASR processor
-                self.connection.asr_processor.insert_audio_chunk(audio)
+                self.connection.asr_processor.process_audio(audio)
 
                 # Process current buffer (partial + complete segments)
-                output = self.connection.asr_processor.process_iter()
+                output = self.connection.asr_processor.produce_text()
                 await self.send_result(output)
 
                 if is_eos:
