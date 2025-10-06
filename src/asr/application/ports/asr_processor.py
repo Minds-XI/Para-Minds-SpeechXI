@@ -1,7 +1,7 @@
 from abc import ABC,abstractmethod
 from typing import List
 
-from asr.domain.entities import AudioChunkDTO
+from asr.domain.entities import ASRProcessorResponse, AudioChunkDTO
 
 
 class IASRProcessor(ABC):
@@ -10,10 +10,14 @@ class IASRProcessor(ABC):
         pass
 
     @abstractmethod
-    def produce_text(self):
+    def produce_text(self)->ASRProcessorResponse:
         pass
     
     @abstractmethod
     def init(self):
         pass
 
+    @abstractmethod
+    def finish(self)->ASRProcessorResponse:
+        pass
+    
