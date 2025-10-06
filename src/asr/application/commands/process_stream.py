@@ -9,7 +9,7 @@ from loguru import logger
 SAMPLING_RATE = 16000
 FINAL_CHUNK_TIMEOUT = 0.2  # seconds to wait before forcing flush of last audio
 
-class StreamingPipeline:
+class StreamProcessor:
 
     def __init__(   self, 
                     connection:ConnectionManager,
