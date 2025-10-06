@@ -1,79 +1,24 @@
 import sys
+from typing import List, Optional
 from loguru import logger
 import numpy as np
 
-class HypothesisBuffer:
+from asr.application.ports.asr_processor import IASRProcessor
+from asr.domain.entities import ASRProcessorResponse, AudioChunkDTO
+from asr.infrastructure.whisper.base import ASRBase
+from asr.infrastructure.whisper.entities import ASRResponse, HypothesisBuffer
 
-    def __init__(self, logfile=sys.stderr):
-        self.commited_in_buffer = []
-        self.buffer = []
-        self.new = []
 
-        self.last_commited_time = 0
-        self.last_commited_word = None
 
-        self.logfile = logfile
-
-    def insert(self, new, offset):
-        # compare self.commited_in_buffer and new. It inserts only the words in new that extend the commited_in_buffer, it means they are roughly behind last_commited_time and new in content
-        # the new tail is added to self.new
-        
-        new = [(a+offset,b+offset,t) for a,b,t in new]
-        self.new = [(a,b,t) for a,b,t in new if a > self.last_commited_time-0.1]
-
-        if len(self.new) >= 1:
-            a,b,t = self.new[0]
-            if abs(a - self.last_commited_time) < 1:
-                if self.commited_in_buffer:
-                    # it's going to search for 1, 2, ..., 5 consecutive words (n-grams) that are identical in commited and new. If they are, they're dropped.
-                    cn = len(self.commited_in_buffer)
-                    nn = len(self.new)
-                    for i in range(1,min(min(cn,nn),5)+1):  # 5 is the maximum 
-                        c = " ".join([self.commited_in_buffer[-j][2] for j in range(1,i+1)][::-1])
-                        tail = " ".join(self.new[j-1][2] for j in range(1,i+1))
-                        if c == tail:
-                            words = []
-                            for j in range(i):
-                                words.append(repr(self.new.pop(0)))
-                            words_msg = " ".join(words)
-                            logger.debug(f"removing last {i} words: {words_msg}")
-                            break
-
-    def flush(self):
-        # returns commited chunk = the longest common prefix of 2 last inserts. 
-
-        commit = []
-        while self.new:
-            na, nb, nt = self.new[0]
-
-            if len(self.buffer) == 0:
-                break
-
-            if nt == self.buffer[0][2]:
-                commit.append((na,nb,nt))
-                self.last_commited_word = nt
-                self.last_commited_time = nb
-                self.buffer.pop(0)
-                self.new.pop(0)
-            else:
-                break
-        self.buffer = self.new
-        self.new = []
-        self.commited_in_buffer.extend(commit)
-        return commit
-
-    def pop_commited(self, time):
-        while self.commited_in_buffer and self.commited_in_buffer[0][1] <= time:
-            self.commited_in_buffer.pop(0)
-
-    def complete(self):
-        return self.buffer
-
-class OnlineASRProcessor:
+class OnlineASRProcessor(IASRProcessor):
 
     SAMPLING_RATE = 16000
 
-    def __init__(self, asr, tokenizer=None, buffer_trimming=("segment", 15), logfile=sys.stderr):
+    def __init__(self,
+                asr:ASRBase,
+                tokenizer=None,
+                buffer_trimming=("segment", 15),
+                logfile=sys.stderr):
         """asr: WhisperASR object
         tokenizer: sentence tokenizer object for the target language. Must have a method *split* that behaves like the one of MosesTokenizer. It can be None, if "segment" buffer trimming option is used, then tokenizer is not used at all.
         ("segment", 15)
@@ -90,35 +35,44 @@ class OnlineASRProcessor:
 
     def init(self, offset=None):
         """run this when starting or restarting processing"""
-        self.audio_buffer = np.array([],dtype=np.float32)
+        self.audio_buffer = []
         self.transcript_buffer = HypothesisBuffer(logfile=self.logfile)
         self.buffer_time_offset = 0
         if offset is not None:
             self.buffer_time_offset = offset
         self.transcript_buffer.last_commited_time = self.buffer_time_offset
-        self.commited = []
+        self.commited:List[ASRResponse] = []
 
-    def insert_audio_chunk(self, audio):
-        self.audio_buffer = np.append(self.audio_buffer, audio)
+    def process_audio(self, audio:AudioChunkDTO):
+        self.insert_audio_chunk(audio=audio.audio_data)
+    
+    def produce_text(self):
+        return self.process_iter()
+    
+    def insert_audio_chunk(self, audio:np.ndarray):
+        self.audio_buffer.extend(audio.tolist())
 
     def prompt(self):
         """Returns a tuple: (prompt, context), where "prompt" is a 200-character suffix of commited text that is inside of the scrolled away part of audio buffer. 
         "context" is the commited text that is inside the audio buffer. It is transcribed again and skipped. It is returned only for debugging and logging reasons.
         """
         k = max(0,len(self.commited)-1)
-        while k > 0 and self.commited[k-1][1] > self.buffer_time_offset:
+        while k > 0 and self.commited[k-1].end > self.buffer_time_offset:
             k -= 1
 
         p = self.commited[:k]
-        p = [t for _,_,t in p]
+        p = [entry.word for  entry in p]
         prompt = []
-        l = 0
-        while p and l < 200:  # 200 characters prompt size
-            x = p.pop(-1)
-            l += len(x)+1
-            prompt.append(x)
+        current_len = 0
+        while p and current_len < 200:  # 200 characters prompt size
+            word = p.pop(-1) # pop from last element in the list
+            current_len += len(word)+1
+            prompt.append(word)
+
         non_prompt = self.commited[k:]
-        return self.asr.sep.join(prompt[::-1]), self.asr.sep.join(t for _,_,t in non_prompt)
+        prompt_str = self.asr.sep.join(prompt[::-1]) # reverse to undo the last pop operation 
+        non_prompt_str = self.asr.sep.join(t.word for t in non_prompt)
+        return prompt_str,non_prompt_str 
 
     def process_iter(self):
         """Runs on the current audio buffer.
@@ -130,22 +84,23 @@ class OnlineASRProcessor:
         logger.debug(f"PROMPT: {prompt}")
         logger.debug(f"CONTEXT: {non_prompt}")
         logger.debug(f"transcribing {len(self.audio_buffer)/self.SAMPLING_RATE:2.2f} seconds from {self.buffer_time_offset:2.2f}")
-        res = self.asr.transcribe(self.audio_buffer, init_prompt=prompt)
+        audio_buffer_np = np.array(self.audio_buffer,dtype=np.float32)
+        res = self.asr.transcribe(audio_buffer_np, init_prompt=prompt)
 
         # transform to [(beg,end,"word1"), ...]
-        tsw = self.asr.ts_words(res)
+        asr_response = self.asr.timestamp_to_words(res)
 
-        self.transcript_buffer.insert(tsw, self.buffer_time_offset)
-        o = self.transcript_buffer.flush()
-        self.commited.extend(o)
-        completed = self.to_flush(o)
+        self.transcript_buffer.insert(asr_response, self.buffer_time_offset)
+        results = self.transcript_buffer.flush()
+        self.commited.extend(results)
+        completed = self.to_flush(results)
         logger.debug(f">>>>COMPLETE NOW: {completed}")
         the_rest = self.to_flush(self.transcript_buffer.complete())
         logger.debug(f"INCOMPLETE: {the_rest}")
 
         # there is a newly confirmed text
 
-        if o and self.buffer_trimming_way == "sentence":  # trim the completed sentences
+        if results and self.buffer_trimming_way == "sentence":  # trim the completed sentences
             if len(self.audio_buffer)/self.SAMPLING_RATE > self.buffer_trimming_sec:  # longer than this
                 self.chunk_completed_sentence()
 
@@ -157,19 +112,11 @@ class OnlineASRProcessor:
         
         if len(self.audio_buffer)/self.SAMPLING_RATE > s:
             self.chunk_completed_segment(res)
-
-            # alternative: on any word
-            #l = self.buffer_time_offset + len(self.audio_buffer)/self.SAMPLING_RATE - 10
-            # let's find commited word that is less
-            #k = len(self.commited)-1
-            #while k>0 and self.commited[k][1] > l:
-            #    k -= 1
-            #t = self.commited[k][1] 
             logger.debug("chunking segment")
-            #self.chunk_at(t)
+
 
         logger.debug(f"len of buffer now: {len(self.audio_buffer)/self.SAMPLING_RATE:2.2f}")
-        return self.to_flush(o)
+        return self.to_flush(results)
 
     def chunk_completed_sentence(self):
         if self.commited == []: return
@@ -182,7 +129,7 @@ class OnlineASRProcessor:
         while len(sents) > 2:
             sents.pop(0)
         # we will continue with audio processing at this timestamp
-        chunk_at = sents[-2][1]
+        chunk_at = sents[-2].end
 
         logger.debug(f"--- sentence chunked at {chunk_at:2.2f}")
         self.chunk_at(chunk_at)
@@ -192,7 +139,7 @@ class OnlineASRProcessor:
 
         ends = self.asr.segments_end_ts(res)
 
-        t = self.commited[-1][1]
+        t = self.commited[-1].end
 
         if len(ends) > 1:
 
@@ -212,7 +159,7 @@ class OnlineASRProcessor:
 
 
 
-    def chunk_at(self, time):
+    def chunk_at(self, time:float):
         """trims the hypothesis and audio buffer at "time"
         """
         self.transcript_buffer.pop_commited(time)
@@ -220,14 +167,14 @@ class OnlineASRProcessor:
         self.audio_buffer = self.audio_buffer[int(cut_seconds*self.SAMPLING_RATE):]
         self.buffer_time_offset = time
 
-    def words_to_sentences(self, words):
+    def words_to_sentences(self, words:List[ASRResponse])->List[ASRProcessorResponse]:
         """Uses self.tokenizer for sentence segmentation of words.
         Returns: [(beg,end,"sentence 1"),...]
         """
         
         cwords = [w for w in words]
-        t = " ".join(o[2] for o in cwords)
-        s = self.tokenizer.split(t)
+        t = " ".join(o.word for o in cwords)
+        s:List[str] = self.tokenizer.split(t)
         out = []
         while s:
             beg = None
@@ -235,18 +182,18 @@ class OnlineASRProcessor:
             sent = s.pop(0).strip()
             fsent = sent
             while cwords:
-                b,e,w = cwords.pop(0)
-                w = w.strip()
-                if beg is None and sent.startswith(w):
-                    beg = b
-                elif end is None and sent == w:
-                    end = e
-                    out.append((beg,end,fsent))
+                entry = cwords.pop(0)
+                word = entry.word.strip()
+                if beg is None and sent.startswith(word):
+                    beg = entry.start
+                elif end is None and sent == word:
+                    end = entry.end
+                    out.append(ASRProcessorResponse(start=beg,end=end,sentense=fsent))
                     break
-                sent = sent[len(w):].strip()
+                sent = sent[len(word):].strip()
         return out
 
-    def finish(self):
+    def finish(self)->ASRProcessorResponse:
         """Flush the incomplete text when the whole processing ends.
         Returns: the same format as self.process_iter()
         """
@@ -256,21 +203,19 @@ class OnlineASRProcessor:
         self.buffer_time_offset += len(self.audio_buffer)/16000
         return f
 
-
-    def to_flush(self, sents, sep=None, offset=0, ):
-        # concatenates the timestamped words or sentences into one sequence that is flushed in one line
-        # sents: [(beg1, end1, "sentence1"), ...] or [] if empty
-        # return: (beg1,end-of-last-sentence,"concatenation of sentences") or (None, None, "") if empty
+    def to_flush(self, sents:List[ASRResponse], sep=None, offset=0, ):
         if sep is None:
             sep = self.asr.sep
-        t = sep.join(s[2] for s in sents)
+        sentence = sep.join(s.word for s in sents)
         if len(sents) == 0:
-            b = None
-            e = None
+            start = None
+            end = None
         else:
-            b = offset + sents[0][0]
-            e = offset + sents[-1][1]
-        return (b,e,t)
+            start = offset + sents[0].start
+            end = offset + sents[-1].end
+
+        return ASRProcessorResponse(start=start,end=end,sentense=sentence)
+
 
 class VACOnlineASRProcessor(OnlineASRProcessor):
     '''Wraps OnlineASRProcessor with VAC (Voice Activity Controller). 
@@ -291,7 +236,7 @@ class VACOnlineASRProcessor(OnlineASRProcessor):
             repo_or_dir='snakers4/silero-vad',
             model='silero_vad'
         )
-        from asr.core.whisper.silero_vad_iterator import FixedVADIterator
+        from asr.infrastructure.whisper.silero_vad_iterator import FixedVADIterator
         self.vac = FixedVADIterator(model)  # we use the default options there: 500ms silence, 100ms padding, etc.  
 
         self.logfile = self.online.logfile
