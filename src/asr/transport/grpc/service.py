@@ -2,53 +2,30 @@
 import asyncio
 import os
 
-from asr.application.pipeline import StreamingPipeline
-from asr.application.sentinels import EOS
-from asr.application.session import ConnectionManager
-from asr.core.whisper.utils import load_asr_model, load_audio_chunk, online_factory
-from confluent_kafka import Consumer
-from confluent_kafka.schema_registry.protobuf import ProtobufDeserializer
-from confluent_kafka.serialization import SerializationContext, MessageField
-from confluent_kafka.schema_registry.protobuf import ProtobufSerializer, ProtobufDeserializer
-from confluent_kafka import Producer
-
-
+from asr.application.commands.process_stream import StreamProcessor
+from asr.application.ports.message import IMessageAudioSubscriber, IMessageTextPublisher
+from asr.domain.sentinels import EOS
+from asr.application.commands.session import ConnectionManager
+from asr.infrastructure.whisper.utils import load_asr_model, load_audio_chunk, online_factory
 from loguru import logger
 import sys
-from asr.domain.entities import TextChunk
-from shared.protos_gen.whisper_pb2 import StreamingResponse,AudioChunk
+from asr.domain.entities import AudioChunkDTO, TextChunk
 SAMPLING_RATE = 16000
-
-def delivery_report(err, msg):
-    if err is not None:
-        logger.error(f"[asr] Delivery failed: {err}")
-    else:
-        logger.info(f"[asr] Delivered message to {msg.topic()} "
-                    f"[{msg.partition()}] @ offset {msg.offset()}")
-
 
 class AsrService:
     def __init__(self,
                 args,
-                raw_audio_consumer:Consumer,
-                raw_audio_deserializer:ProtobufDeserializer,
-                req_topic_name:str,
-                text_producer:Producer,
-                text_producer_topic:str,
-                response_serializer:ProtobufSerializer
-                 ):
+                audio_consumer:IMessageAudioSubscriber,
+                text_producer:IMessageTextPublisher,
+                ):
         self.args = args
         self.asr, self.tokenizer = load_asr_model(args)  # existing init
         self.min_chunk = args.min_chunk_size
         self.warmed = False
         self.sessions = {}
         self._warmup_if_needed()
-        self.raw_audio_consumer = raw_audio_consumer
-        self.raw_audio_deserializer = raw_audio_deserializer
-        self.req_topic_name = req_topic_name
+        self.audio_consumer = audio_consumer
         self.text_producer = text_producer
-        self.text_producer_topic = text_producer_topic
-        self.response_serializer = response_serializer
 
     def _warmup_if_needed(self):
         msg = ("Whisper is not warmed up. The first chunk "
@@ -77,17 +54,7 @@ class AsrService:
                 break
             if text_chunk:
                 logger.info("sending text chunks")
-                text_event = StreamingResponse(session_id=connection.session_id,
-                                               text=text_chunk.sentence,
-                                               is_final=False)
-                self.text_producer.produce(
-                        self.text_producer_topic,
-                        key=connection.session_id,
-                        value=self.response_serializer(text_event,
-                                                   SerializationContext(self.text_producer_topic, MessageField.VALUE)),
-                        callback=delivery_report
-                )
-                self.text_producer.poll(0)
+                await self.text_producer.publish(text=text_chunk)
 
 
     async def _ensure_session(self, session_id: str) -> ConnectionManager:
@@ -100,10 +67,10 @@ class AsrService:
         asr_processor.init()
 
         conn = ConnectionManager(session_id=session_id, asr_processor=asr_processor)
-        server_processor = StreamingPipeline(connection=conn, min_chunk=self.min_chunk)
+        stream_processor = StreamProcessor(connection=conn, min_chunk=self.min_chunk)
 
         # long-lived processor task
-        proc_task = asyncio.create_task(server_processor.process(), name=f"proc-{session_id}")
+        proc_task = asyncio.create_task(stream_processor.process(), name=f"proc-{session_id}")
 
         # long-lived emitter task
         emitter_task = asyncio.create_task(self._emit_text(conn), name=f"emit-{session_id}")
@@ -117,31 +84,34 @@ class AsrService:
         logger.info(f"[asr] session created: {session_id}")
         return conn
 
-    async def _route_audio(self, session_id: str, audio_evt: AudioChunk):
+    async def _route_audio(self,audio_event: AudioChunkDTO):
         """Push incoming audio into the session queue (backpressure-aware)."""
         try:
-            conn = await self._ensure_session(session_id)
-            await conn.write_to_audio_queue(audio_evt)
+            conn = await self._ensure_session(audio_event.session_id)
+            await conn.write_to_audio_queue(audio_event)
             return conn
         except Exception as e:
-            logger.exception(f"[asr] enqueue failed for {session_id}: {e}")
+            logger.exception(f"[asr] enqueue failed for {audio_event.session_id}: {e}")
 
-    async def StreamingRecognize(self):
+    async def stream_recognize(self):
         try:
             while True:
-                msg = self.raw_audio_consumer.poll(timeout=0.2)
-                if msg is None:
+                audio_event = await self.audio_consumer.get()
+                if audio_event is None:
                     await asyncio.sleep(0.01)
                     continue
-                session_id = msg.key().decode() if msg.key() else "unknown"
-                audio_bytes = msg.value() 
-                audio_event:AudioChunk = self.raw_audio_deserializer(audio_bytes,SerializationContext(topic=self.req_topic_name,field=MessageField.VALUE))
-                # await connection_manager.write_to_audio_queue(audio_event)
                 
-                _ = await self._route_audio(session_id, audio_event)
+                _ = await self._route_audio(audio_event)
 
         except Exception as e:
             logger.exception(f"[asr] {e}")
         finally:
-            self.raw_audio_consumer.close()
-            self.text_producer.flush()
+            await self.audio_consumer.close()
+            await self.text_producer.flush()
+            await self.text_producer.close()
+            # Cancel all session tasks
+            for s in self.sessions.values():
+                for task_name in ["proc_task", "emitter_task"]:
+                    task = s.get(task_name)
+                    if task and not task.done():
+                        task.cancel()
