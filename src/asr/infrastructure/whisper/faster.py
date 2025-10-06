@@ -1,7 +1,11 @@
-from asr.core.whisper.base import ASRBase
+from typing import List
+from asr.infrastructure.whisper.base import ASRBase
 import torch
 from loguru import logger
 from faster_whisper import WhisperModel
+from faster_whisper.transcribe import Segment
+
+from asr.infrastructure.whisper.entities import ASRResponse
 
 class FasterWhisperASR(ASRBase):
     """Uses faster-whisper library as the backend. Works much faster, appx 4-times (in offline mode). For GPU, it requires installation with a specific CUDNN version.
@@ -32,28 +36,34 @@ class FasterWhisperASR(ASRBase):
         model = WhisperModel(modelsize, device="cpu", compute_type="int8") #, download_root="faster-disk-cache-dir/")
         return model
 
-    def transcribe(self, audio, init_prompt=""):
+    def transcribe(self, audio, init_prompt="")-> List[Segment]:
 
         # tested: beam_size=5 is faster and better than 1 (on one 200 second document from En ESIC, min chunk 0.01)
-        segments, info = self.model.transcribe(audio, language=self.original_language, initial_prompt=init_prompt, beam_size=5, word_timestamps=True, condition_on_previous_text=True, **self.transcribe_kargs)
-        #print(info)  # info contains language detection result
-
+        segments, info = self.model.transcribe(audio,
+                                                language=self.original_language,
+                                                initial_prompt=init_prompt,
+                                                beam_size=5,
+                                                word_timestamps=True,
+                                                condition_on_previous_text=True,
+                                                **self.transcribe_kargs)
         return list(segments)
-
-    def ts_words(self, segments):
-        o = []
+    
+    def timestamp_to_words(self,segments:List[Segment])->List[ASRResponse]:
+        output = []
         for segment in segments:
             for word in segment.words:
                 if segment.no_speech_prob > 0.9:
                     continue
                 # not stripping the spaces -- should not be merged with them!
                 w = word.word
-                t = (word.start, word.end, w)
-                o.append(t)
-        return o
+                token = ASRResponse(start=word.start,
+                                    end=word.end,
+                                    word=w)
+                output.append(token)
+        return output
 
-    def segments_end_ts(self, res):
-        return [s.end for s in res]
+    def segments_end_ts(self, response:List[ASRResponse])->List[float]:
+        return [s.end for s in response]
 
     def use_vad(self):
         self.transcribe_kargs["vad_filter"] = True
