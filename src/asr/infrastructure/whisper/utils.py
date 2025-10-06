@@ -5,9 +5,10 @@ import sys
 import time
 from loguru import logger
 
-from asr.core.whisper.faster import FasterWhisperASR
-from asr.core.whisper.processor import OnlineASRProcessor, VACOnlineASRProcessor
-from asr.core.whisper.tokenizer import create_tokenizer
+from asr.application.ports.asr_processor import IASRProcessor
+from asr.infrastructure.whisper.faster import FasterWhisperASR
+from asr.infrastructure.whisper.processor import OnlineASRProcessor, VACOnlineASRProcessor
+from asr.infrastructure.whisper.tokenizer import create_tokenizer
 
 def add_shared_args(parser):
     """shared args for simulation (this entry point) and server
@@ -56,7 +57,7 @@ def load_asr_model(args, logfile=sys.stderr):
     return asr, tokenizer
 
 
-def online_factory(asr, args, tokenizer=None, logfile=sys.stderr):
+def online_factory(asr, args, tokenizer=None, logfile=sys.stderr)->IASRProcessor:
     """
     Create a NEW OnlineASRProcessor (or VACOnlineASRProcessor) bound to the
     already-loaded `asr`. Use this PER STREAM (per gRPC call).
