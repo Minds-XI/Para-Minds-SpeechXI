@@ -1,21 +1,34 @@
 from abc import ABC,abstractmethod
+from typing import Optional
 
 from asr.domain.entities import AudioChunkDTO, TextChunk
 
 
 class IMessageTextPublisher(ABC):
     @abstractmethod
-    def publish(self,text:TextChunk):
+    async def publish(self,text:TextChunk):
         pass
     @abstractmethod
-    def flush(self,timeout:float):
+    async def flush(self,timeout:float):
+        pass
+    
+    @abstractmethod
+    async def start(self):
+        pass
+    
+    @abstractmethod
+    async def close(self):
         pass
     
 class IMessageAudioSubscriber(ABC):
     @abstractmethod
-    def get(self)->AudioChunkDTO:
+    async def get(self)->Optional[AudioChunkDTO]:
         pass
     
     @abstractmethod
-    def close(self):
+    async def start(self):
+        pass
+    
+    @abstractmethod
+    async def close(self):
         pass

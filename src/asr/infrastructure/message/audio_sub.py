@@ -1,10 +1,11 @@
+import asyncio
 from typing import Optional
 
 from loguru import logger
 import numpy as np
 from asr.application.ports.message import IMessageAudioSubscriber
 from asr.domain.entities import AudioChunkDTO, KafkaConfig
-from confluent_kafka import Consumer
+from aiokafka import AIOKafkaConsumer
 from confluent_kafka.schema_registry.protobuf import  ProtobufDeserializer
 from shared.protos_gen.whisper_pb2 import AudioChunk
 from confluent_kafka.serialization import SerializationContext, MessageField
@@ -20,29 +21,44 @@ class KafkaAudioSub(IMessageAudioSubscriber):
 
         # Create a consumer configuration
         raw_audio_consumer_config = {
-            'bootstrap.servers': f'{config.external_host}:{config.schema_registry_port}',  # Kafka server address
-            'group.id': 'asr-group',                                        # Consumer group name
-            'auto.offset.reset': 'earliest'                                 # Start reading from beginning
+            'bootstrap_servers': f'{config.external_host}:{config.schema_registry_port}',  # Kafka server address
+            'group_id': 'asr-group',                                        # Consumer group name
+            'auto_offset_reset': 'earliest'                                 # Start reading from beginning
         }
-        self.raw_audio_consumer = Consumer(raw_audio_consumer_config)
-        self.raw_audio_consumer.subscribe([topic_name])
+        self.raw_audio_consumer = AIOKafkaConsumer(**raw_audio_consumer_config)
         self.topic_name= topic_name
-    
-    def get(self)->Optional[AudioChunkDTO]:
-        msg = self.raw_audio_consumer.poll(timeout=0.2)
+        self.is_started_flag = False
 
+    async def start(self):
+        try:
+            await self.raw_audio_consumer.start()
+            self.raw_audio_consumer.subscribe([self.topic_name])
+        except Exception as e:
+            logger.error(e)
+            return None    
+        self.is_started_flag = True
+        
+
+    async def get(self)->Optional[AudioChunkDTO]:
+        if not self.is_started_flag:
+            await self.start()
+        try:
+            msg = await self.raw_audio_consumer.getone()
+        except Exception as e:
+            logger.warning(e)
+            return None
+        
         if msg is None:
             return None
         
-        if msg.error():
-            logger.warning(f"Kafka error: {msg.error()}")
-            return None
-        
-        session_id = msg.key().decode() if msg.key() else "unknown"
+        session_id = msg.key.decode() if isinstance(msg.key, bytes) else str(msg.key or "unknown")
         audio_bytes = msg.value() 
         
-        audio_event:AudioChunk = self.deserializer(audio_bytes,
-                                                   SerializationContext(topic=self.topic_name,field=MessageField.VALUE))
+        audio_event:AudioChunk =  await asyncio.to_thread(
+                                    self.deserializer,
+                                    audio_bytes,
+                                    SerializationContext(topic=self.topic_name, field=MessageField.VALUE)
+                                )
         if audio_event is None:
             logger.warning("Failed to deserialize AudioChunk")
             return None
@@ -53,7 +69,7 @@ class KafkaAudioSub(IMessageAudioSubscriber):
                              seq=audio_event.seq,
                              session_id=session_id)
     
-    def close(self):
+    async def close(self):
         if self.raw_audio_consumer:
-            self.raw_audio_consumer.close()
+            await self.raw_audio_consumer.stop()
             logger.info("Kafka consumer closed.")
