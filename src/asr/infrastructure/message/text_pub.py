@@ -14,7 +14,7 @@ class KafkaTextPub(IMessageTextPublisher):
     def __init__(self,
                  config:KafkaConfig,
                  topic_name:str,
-                 key:str):
+                 ):
         super().__init__()
         producer_config = {
             "bootstrap_servers": f"{config.external_host}:{config.external_port}",
@@ -28,7 +28,6 @@ class KafkaTextPub(IMessageTextPublisher):
         self.serializer = ProtobufSerializer(StreamingResponse, self.schema_registry_client)
         self.counter_id = 0
         self.topic_name= topic_name
-        self.key = key
         
     async def publish(self, text:TextChunk)->None:
         text_event = StreamingResponse(session_id=text.session_id,
