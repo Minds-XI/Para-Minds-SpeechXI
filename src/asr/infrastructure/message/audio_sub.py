@@ -1,6 +1,7 @@
 from typing import Optional
 
 from loguru import logger
+import numpy as np
 from asr.application.ports.message import IMessageAudioSubscriber
 from asr.domain.entities import AudioChunkDTO, KafkaConfig
 from confluent_kafka import Consumer
@@ -39,14 +40,16 @@ class KafkaAudioSub(IMessageAudioSubscriber):
         
         session_id = msg.key().decode() if msg.key() else "unknown"
         audio_bytes = msg.value() 
-
+        
         audio_event:AudioChunk = self.deserializer(audio_bytes,
                                                    SerializationContext(topic=self.topic_name,field=MessageField.VALUE))
         if audio_event is None:
             logger.warning("Failed to deserialize AudioChunk")
             return None
         
-        return AudioChunkDTO(audio_data=audio_event.pcm16,
+        audio_data = np.frombuffer(audio_event.pcm16, dtype="<i2").astype(np.float32) / 32768.0
+
+        return AudioChunkDTO(audio_data=audio_data,
                              seq=audio_event.seq,
                              session_id=session_id)
     
