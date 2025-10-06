@@ -1,13 +1,13 @@
 import asyncio
 from typing import Union
+from asr.application.ports.asr_processor import IASRProcessor
 from asr.domain.entities import TextChunk
 from shared.protos_gen.whisper_pb2 import AudioChunk
 
-from asr.core.whisper.processor import OnlineASRProcessor
-
-
 class ConnectionManager:
-    def __init__(self, session_id:int, asr_processor: OnlineASRProcessor):
+    def __init__(self,
+                 session_id:int,
+                   asr_processor: IASRProcessor):
         self.session_id = session_id
         self.audio_queue = asyncio.Queue(maxsize=10)
         self.text_queue  = asyncio.Queue(maxsize=10)
