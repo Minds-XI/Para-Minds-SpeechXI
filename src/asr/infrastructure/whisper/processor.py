@@ -188,7 +188,7 @@ class OnlineASRProcessor(IASRProcessor):
                     beg = entry.start
                 elif end is None and sent == word:
                     end = entry.end
-                    out.append(ASRProcessorResponse(start=beg,end=end,sentense=fsent))
+                    out.append(ASRProcessorResponse(start=beg,end=end,sentence=fsent))
                     break
                 sent = sent[len(word):].strip()
         return out
@@ -214,7 +214,7 @@ class OnlineASRProcessor(IASRProcessor):
             start = offset + sents[0].start
             end = offset + sents[-1].end
 
-        return ASRProcessorResponse(start=start,end=end,sentense=sentence)
+        return ASRProcessorResponse(start=start,end=end,sentence=sentence)
 
 
 class VACOnlineASRProcessor(OnlineASRProcessor):
