@@ -1,5 +1,8 @@
 from abc import ABC,abstractmethod
 import sys
+from typing import List
+
+from asr.infrastructure.whisper.entities import ASRResponse
 
 class ASRBase(ABC):
 
@@ -33,3 +36,10 @@ class ASRBase(ABC):
         # raise NotImplemented("must be implemented in the child class")
         pass
     
+    @abstractmethod
+    def timestamp_to_words(self,segments)->List[ASRResponse]:
+        pass
+
+    @abstractmethod
+    def segments_end_ts(self,response:List[ASRResponse])->List[float]:
+        pass
