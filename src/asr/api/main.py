@@ -6,8 +6,6 @@ from asr.application.commands.asr_service import AsrService
 from asr.domain.entities import KafkaConfig
 from asr.infrastructure.message.audio_sub import KafkaAudioSub
 from asr.infrastructure.message.text_pub import KafkaTextPub
-from dotenv import load_dotenv
-load_dotenv()
 
 async def serve():
     kafka_config = KafkaConfig()
@@ -17,7 +15,7 @@ async def serve():
                             topic_name="text-chunk")
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8080)
+    # parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--warmup-file", type=str, dest="warmup_file")
     add_shared_args(parser)  # from whisper_online
     args = parser.parse_args()
