@@ -21,8 +21,8 @@ class KafkaAudioSub(IMessageAudioSubscriber):
 
         # Create a consumer configuration
         raw_audio_consumer_config = {
-            'bootstrap_servers': f'{config.external_host}:{config.schema_registry_port}',  # Kafka server address
-            'group_id': 'asr-group',                                        # Consumer group name
+            'bootstrap_servers': f'{config.external_host}:{config.external_port}',  # Kafka server address
+            'group_id': 'asr-group-0',                                        # Consumer group name
             'auto_offset_reset': 'earliest'                                 # Start reading from beginning
         }
         self.raw_audio_consumer = AIOKafkaConsumer(**raw_audio_consumer_config)
@@ -52,7 +52,7 @@ class KafkaAudioSub(IMessageAudioSubscriber):
             return None
         
         session_id = msg.key.decode() if isinstance(msg.key, bytes) else str(msg.key or "unknown")
-        audio_bytes = msg.value() 
+        audio_bytes = msg.value
         
         audio_event:AudioChunk =  await asyncio.to_thread(
                                     self.deserializer,

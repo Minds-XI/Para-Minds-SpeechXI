@@ -18,7 +18,7 @@ class KafkaTextPub(IMessageTextPublisher):
         super().__init__()
         producer_config = {
             "bootstrap_servers": f"{config.external_host}:{config.external_port}",
-            "acks": "1",
+            "acks": "all",
             "enable_idempotence": True,
             "linger_ms": 5,
         }
@@ -36,17 +36,17 @@ class KafkaTextPub(IMessageTextPublisher):
         value_bytes = await asyncio.to_thread(
             self.serializer, text_event, SerializationContext(self.topic_name, MessageField.VALUE)
         )
-        await self.producer.send_and_wait(self.topic_name,value=value_bytes,key=text.session_id)
+        await self.producer.send(self.topic_name,value=value_bytes,key=text.session_id)
 
     async def start(self):
         await self.producer.start()
         logger.info(f"AIOKafkaProducer started for topic {self.topic_name}")
 
-    async def flush(self, timeout: Optional[float] = 5.0):
+    async def flush(self):
         """
         Flush any buffered messages.
         """
-        await self.producer.flush(timeout)
+        await self.producer.flush()
         logger.info("Kafka producer flushed.")
     
     async def close(self):

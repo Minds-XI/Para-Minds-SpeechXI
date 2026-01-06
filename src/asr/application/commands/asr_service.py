@@ -53,7 +53,7 @@ class AsrService:
             if text_chunk is EOS:
                 break
             if text_chunk:
-                logger.info("sending text chunks")
+                logger.info(f"sending text chunks {text_chunk}")
                 await self.text_producer.publish(text=text_chunk)
 
 

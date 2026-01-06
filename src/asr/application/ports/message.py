@@ -9,7 +9,7 @@ class IMessageTextPublisher(ABC):
     async def publish(self,text:TextChunk):
         pass
     @abstractmethod
-    async def flush(self,timeout:float):
+    async def flush(self):
         pass
     
     @abstractmethod
